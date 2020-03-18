@@ -1,0 +1,370 @@
+---
+title: "NBA Shot Charts scrapped from Yahoo! game stream"
+author: "Adam Rees / Gabe Chandler"
+date: "3/17/2020"
+output: html_document
+---
+
+```{r}
+require(stringr)
+```
+
+Create the team data (city and team name and code number)
+```{r}
+TeamInfo <- read.table("~/TeamInfo", quote="\"", comment.char="", header = TRUE)
+TeamInfo$TeamNum <- as.character(TeamInfo$TeamNum)
+for (i in 1:nrow(TeamInfo)) {
+  if (nchar(TeamInfo[i,2])==1)
+    TeamInfo[i,2] <- paste('0', sep="", TeamInfo[i,2])
+}
+
+```
+
+Import the schedule
+```{r}
+sched <- read.csv("~/nba-full-schedule-2019-2020.csv")
+```
+
+Let's find all the Suns' games
+```{r}
+suns.played <- which(sched$away_team=='PHX' | sched$home_team=='PHX')[1:65]
+suns.games <- list()
+for (i in 1:length(suns.played))
+  suns.games[[i]] <- nba.data(suns.played[[i]])
+```
+
+
+Create the urls 
+```{r}
+make.url <- function(game) {
+  date <- sched$game_date[game]
+  slashes <- gregexpr('/', date)[[1]]
+  mo <- substr(date, 1, slashes[1]-1)
+  if ((nchar(mo))==1)
+    mo <- paste(sep="", "0", mo)
+  day <- substr(date, slashes[1]+1, slashes[2]-1)
+  if ((nchar(day))==1)
+    day <- paste(sep="", "0", day)
+  year <- substr(date, slashes[2]+1, 47)
+  game.url <- str_to_lower(paste(sep="", 'https://sports.yahoo.com/nba/', gsub(" ", "-",   sched[game,]$away_team_full_name),'-', gsub(" ", "-", sched[game,]$home_team_full_name),'-','20',year,mo,day, TeamInfo$TeamNum[which(TeamInfo$Team==sched$home_team[game])],'/?section=gamestream'))
+  game.url
+}
+```
+
+```{r}
+to.seconds <- function(time) {
+  colon <- gregexpr(":", time)[[1]]
+  if (colon > 1) {
+    min <- as.numeric(substr(time, 1,(colon-1)))
+    sec <- as.numeric(substr(time,colon+1,47)) 
+  }
+  else {
+    min <- 0
+    sec <- as.numeric(substr(time,colon+1,47))
+  }
+  min*60+sec
+}
+```
+
+```{r}
+nba.data <- function(game) {
+  game.url <- make.url(game)
+  url <- getURL(game.url)
+  ####creates the data frame for a given game
+  shots <- gregexpr('"SHOT"', url)[[1]]
+  player <- gregexpr('player', url)[[1]]
+  shooter <- c()
+  for (i in 1:length(shots)) {
+    shooter[i] <- substr(url, player[which.max(player * (player<shots[i]))+1]+9,
+                         player[which.max(player * (player<shots[i]))+1]+12)
+  }
+  shooter <- as.numeric(shooter)
+  side <- gregexpr('side_of_basket', url)[[1]]
+  sides <- c()
+  for (i in 1:length(side))
+    sides[i] <- substr(url, side[i]+17, side[i]+17)
+  make <- gregexpr('shot_made', url)[[1]]
+  makes <- c()
+  for (i in 1:length(side))
+    makes[i] <- substr(url, make[i]+12, make[i]+12)
+  makes <- as.numeric(makes)
+  base <- gregexpr('baseline_offset_percentage', url)[[1]]
+  baseline <- c()
+  for (i in 1:length(base)) {
+    baseline[i] <- substr(url, base[i]+28, base[i]+32)
+    comma <-  gregexpr(',', baseline[i])[[1]]
+    baseline[i] <- substr(baseline[i], 1, comma-1)
+  }
+  baseline <- as.numeric(baseline)
+  sidel <- gregexpr('sideline_offset_percentage', url)[[1]]
+  sideline <- c()
+  for (i in 1:length(sidel)) {
+    sideline[i] <- substr(url, sidel[i]+28, sidel[i]+38)
+    comma <-  gregexpr(',', sideline[i])[[1]]
+    sideline[i] <- substr(sideline[i], 1, comma-1)
+  }
+  sideline <- as.numeric(sideline)
+  worth <- gregexpr('"points"', url)[[1]]
+  point <- c()
+  for (i in 1:length(base)) 
+    point[i] <- substr(url, worth[i]+10, worth[i]+10)
+  point <- as.numeric(point)
+  aways <- gregexpr('away_score', url)[[1]]
+  away <- c()
+  for (i in 1:length(shots)) {
+    away[i] <- substr(url, aways[which.max(aways * (aways<shots[i]))]+13,
+                      aways[which.max(aways * (aways<shots[i]))]+16)
+    quote <-  gregexpr('"', away[i], fixed=TRUE)[[1]]
+    away[i] <- substr(away[i], 1, quote-1)
+  }
+  away <- as.numeric(away)
+  homes <- gregexpr('home_score', url)[[1]]
+  home <- c()
+  for (i in 1:length(shots)) {
+    home[i] <- substr(url, homes[which.max(homes * (homes<shots[i]))+1]+13,
+                      homes[which.max(homes * (homes<shots[i]))+1]+16)
+    quote <-  gregexpr('"', home[i], fixed=TRUE)[[1]]
+    home[i] <- substr(home[i], 1, quote-1)
+  }
+  home <- as.numeric(home)
+  shooter <- as.numeric(shooter)
+  sideline <- as.numeric(sideline)
+  q1 <- gregexpr("End of 1st Quarter", url)[[1]][1]
+  q2 <- gregexpr("Halftime", url)[[1]]
+  q3 <- gregexpr("End of 3rd Quarter", url)[[1]][1]
+  q4 <- gregexpr("End of 4th Quarter", url)[[1]][1]
+  q2 <- q2[which(q2 > q1 & q2 <q3) ]
+  quarter <- c(rep(1,sum(shots<q1)), rep(2, sum(shots > q1 & shots < q2)), rep(3, sum(shots > q2 & shots < q3)), rep(4, sum(shots > q3 & shots < q4)))
+  quarter <- c(quarter, rep(5, length(shots)-length(quarter)))
+  clocks <- gregexpr('clock', url)[[1]]
+  clock <- c()
+  for (i in 1:length(shots)) {
+    clock[i] <- substr(url, clocks[which.max(clocks * (clocks<shots[i]))]+8,
+                       clocks[which.max(clocks * (clocks<shots[i]))]+16)
+    quote <-  gregexpr('"', clock[i], fixed=TRUE)[[1]]
+    clock[i] <- substr(clock[i], 1, quote-1)
+  }
+  secs <- c()
+  for (i in 1:length(clock))
+    secs[i] <- to.seconds(clock[i])
+  lineups <- on.court(url)
+  home.shooter <- c()
+  hoopers <- get.lineups(url)
+  for (i in 1:length(shooter))
+    home.shooter[i] <- sum(shooter[i]==hoopers$home)==1
+  shot.summary <- data.frame(shooter, makes, baseline=baseline - 2*baseline * (sides=="L"), sideline, point, away.score=away, home.score=home, quarter, clock, seconds=secs, home.shot=home.shooter, lineups, home.team=rep(sched$home_team[game], length(shooter)), away.team=rep(sched$away_team[game], length(shooter)), date=rep(sched$game_date[game], length(shooter)))
+  names(shot.summary)[12:21] <- c(paste('H', sep="", 1:5), paste('A', sep="", 1:5)) 
+  shot.summary
+}
+```
+
+Let's get the players on the court. 
+```{r}
+get.lineups <- function(url) {
+  ####gets all the players on the rosters for the given game
+  home.start <- gregexpr("home_lineup_order", url)[[1]]
+  home.end <- gregexpr('"away_lineup"', url)[[1]]
+  away.start <- gregexpr("away_lineup_order", url)[[1]]
+  odds <- gregexpr("odds", url)[[1]]
+  away.end <- odds[which.max(odds*(odds<away.start))+1]
+  home.only <- substr(url, home.start, home.end)
+  homies <- gregexpr('nba.p.', home.only)[[1]]
+  home.team <- c()
+  for (i in 1:length(homies)) {
+    home.team[i] <- substr(home.only, homies[i]+6, homies[i]+9)
+  }
+  home.team <- as.numeric(home.team)
+  #overwrite the variables that we aren't saving
+  home.only <- substr(url, away.start, away.end)
+  homies <- gregexpr('nba.p.', home.only)[[1]]
+  away.team <- c()
+  for (i in 1:length(homies)) {
+    away.team[i] <- substr(home.only, homies[i]+6, homies[i]+9)
+  }
+  away.team <- as.numeric(away.team)
+  return(list(home=home.team, away=away.team))
+}
+
+```
+
+```{r}
+on.court <- function(url) {
+  ### returns the on court line up (5 home, 5 away) for every shot taken
+  lines.list <- list()
+  q0a <- gregexpr("Jump-ball violation", url)[[1]][1]
+  q0b <- gregexpr("JUMPBALL", url)[[1]][1]
+  q0 <- q0a + (q0a==-1)*(q0b+1)
+  q1 <- gregexpr("End of 1st Quarter", url)[[1]][1]
+  q2 <- gregexpr('"period":"3"', url)[[1]][1]
+  q3 <- gregexpr('"period":"4"', url)[[1]][1]
+  q4 <- max(gregexpr('"period":"4","away_score', url)[[1]])+200
+  q5 <- max(gregexpr('Final', url)[[1]])
+  quarters <- c(q0,q1,q2,q3,q4,q5)
+
+  #first quarter
+  what.q <- 1
+  qurl <- substr(url,quarters[what.q], quarters[what.q+1])
+  shots <- gregexpr('"SHOT"', qurl)[[1]]
+  line.home <- hoopers$home[1:5]
+  line.away <- hoopers$away[1:5]
+  
+  sub <- gregexpr("enters game", qurl)[[1]]
+  player <- gregexpr("nba.p.", qurl)
+  ingame <- c()
+  for (i in 1:length(player[[1]]))
+    ingame[i] <- substr(qurl, player[[1]][i]+6, player[[1]][i]+9)
+  enter <- c()
+  exit <- c()
+  for (i in 1:length(sub)) {
+    enter[i] <- as.numeric(ingame[which.max(1:length(player[[1]])*(player[[1]]<sub[i]))])
+    exit[i] <- as.numeric(ingame[which.max(1:length(player[[1]])*(player[[1]]<sub[i]))+1])
+  }
+  lines <- c(line.home, line.away)
+  num.shots <- sum(shots < sub[1])
+  lines.all <- c()
+  k <- 1
+  while (k <= num.shots) {
+    lines.all <- rbind(lines.all, lines)
+    k <- k + 1
+  }
+  sub <- c(sub, Inf)  #add on a final shot for the logical below
+  for (i in 1:length(enter)) {
+    lines[which(lines==exit[i])] <- enter[i]
+    num.shots <- sum(shots > sub[i] & shots < sub[i+1])
+    k <- 1
+    while (k <= num.shots) {
+      lines.all <- rbind(lines.all, lines)
+      k <- k + 1
+    }
+  }
+  lines.list[[1]] <- lines.all
+  hoopers <- get.lineups(url)
+  ###later quarters
+  for (what.q in 2:4) {
+    qurl <- substr(url,quarters[what.q], quarters[what.q+1])
+    shots <- gregexpr('"SHOT"', qurl)[[1]]
+    starters <- start.quarter(qurl, hoopers)
+    home <- c()
+    for (i in 1:10) 
+      home[i] <- sum(starters[i]==hoopers$home)==1
+    lines <- c(starters[home==1], starters[home==0])
+    
+    sub <- gregexpr("enters game", qurl)[[1]]
+    player <- gregexpr("nba.p.", qurl)
+    ingame <- c()
+    for (i in 1:length(player[[1]]))
+      ingame[i] <- substr(qurl, player[[1]][i]+6, player[[1]][i]+9)
+    enter <- c()
+    exit <- c()
+    for (i in 1:length(sub)) {
+      enter[i] <- as.numeric(ingame[which.max(1:length(player[[1]])*(player[[1]]<sub[i]))])
+      exit[i] <- as.numeric(ingame[which.max(1:length(player[[1]])*(player[[1]]<sub[i]))+1])
+    }
+    lines.all <- c()
+    num.shots <- sum(shots < sub[1])
+    k <- 1
+    while (k <= num.shots) {
+      lines.all <- rbind(lines.all, lines)
+      k <- k + 1
+    }
+    sub <- c(sub, Inf)  #add on a final shot for the logical below
+    for (i in 1:length(enter)) {
+      lines[which(lines==exit[i])] <- enter[i]
+      num.shots <- sum(shots > sub[i] & shots < sub[i+1])
+      k <- 1
+      while (k <= num.shots) {
+        lines.all <- rbind(lines.all, lines)
+        k <- k + 1
+      }
+    }
+    lines.list[[what.q]] <- lines.all
+  }
+  #is there overtime?
+  periods <- gregexpr('period', url)[[1]]
+  quarter5 <- c()
+  for (i in 1:length(periods)) 
+    quarter5[i] <- substr(url, periods[i]+9, periods[i]+9)
+  if (sum(quarter5=='5')>5) {  #overtime!
+    what.q <- 5
+    qurl <- substr(url,quarters[what.q], quarters[what.q+1])
+    shots <- gregexpr('"SHOT"', qurl)[[1]]
+    starters <- start.quarter(qurl, hoopers)
+    sub <- gregexpr("enters game", qurl)[[1]]
+    player <- gregexpr("nba.p.", qurl)
+    ingame <- c()
+    for (i in 1:length(player[[1]]))
+      ingame[i] <- substr(qurl, player[[1]][i]+6, player[[1]][i]+9)
+    enter <- c()
+    exit <- c()
+    for (i in 1:length(sub)) {
+      enter[i] <- as.numeric(ingame[which.max(1:length(player[[1]])*(player[[1]]<sub[i]))])
+      exit[i] <- as.numeric(ingame[which.max(1:length(player[[1]])*(player[[1]]<sub[i]))+1])
+    }
+    lines.all <- c()
+    num.shots <- sum(shots < sub[1])
+    k <- 1
+    while (k <= num.shots) {
+      lines.all <- rbind(lines.all, lines)
+      k <- k + 1
+    }
+    sub <- c(sub, Inf)  #add on a final shot for the logical below
+    for (i in 1:length(enter)) {
+      lines[which(lines==exit[i])] <- enter[i]
+      num.shots <- sum(shots > sub[i] & shots < sub[i+1])
+      k <- 1
+      while (k <= num.shots) {
+        lines.all <- rbind(lines.all, lines)
+        k <- k + 1
+      }
+    }
+    lines.list[[what.q]] <- lines.all
+  }
+  all.lines <- c()
+  for (i in  1:length(lines.list))
+    all.lines <- rbind(all.lines, lines.list[[i]])
+  all.lines
+}
+
+```
+
+```{r}
+start.quarter <- function(qurl, hoopers) {
+  #takes a quarters worth of data and finds the players who started
+  player <- gregexpr("nba.p.", qurl)[[1]]
+  ingame <- c()
+  for (i in 1:length(player))
+    ingame[i] <- substr(qurl, player[i]+6, player[i]+9)
+  ingame <- as.numeric(ingame)
+  players <- unique(ingame)
+  times <- list() #the chacter value where the player did something
+  for (i in 1:length(players)) {
+    times[[i]] <- player[ingame==players[i]]  
+  }
+  #ingame is everyone who recorded a stat in the quarter
+  sub <- gregexpr("enters game", qurl)[[1]]
+  enter <- c()
+  exit <- c()
+  for (i in 1:length(sub)) {
+    enter[i] <- ingame[which.max(player*(player<sub[i]))]
+    exit[i] <- ingame[which.max(player*(player<sub[i]))+1]
+  }
+  start.quarter <- c()
+  for (i in 1:length(players)) {
+    if (sum(players[[i]]==enter)==0) {
+      start.quarter <- c(start.quarter, players[[i]])
+    } else { 
+      if (sub[min(which(players[[i]]==enter))] > (min(times[[i]])+50))
+        start.quarter <- c(start.quarter, players[[i]])
+    }
+   
+  }
+   start.quarter <- c(start.quarter,hoopers$home, hoopers$away)  #in case only 4 people can be accounted for
+  home <- c()
+  for (i in 1:10) 
+    home[i] <- sum(start.quarter[i]==hoopers$home)==1
+  #if (length(start.quarter[home==1])>5)  #a hack is needed here, want to have people who exit in here
+  #if (length(start.quarter[home==0])>5)  
+  lines <- c(start.quarter[home==1][1:5], start.quarter[home==0][1:5])
+}
+```
+
